@@ -1,3 +1,4 @@
+
 name: Build blu_spark r277 Kernel with KernelSU-Next
 
 on:
@@ -25,17 +26,24 @@ jobs:
         run: |
           git clone https://github.com/engstk/op8 --depth=1 -b blu_spark-17-custom kernel-source
 
-      - name: Integrate KernelSU-Next (Non-GKI Manual Hook Method)
+      - name: Integrate KernelSU-Next (Official Legacy Kprobe Script)
         run: |
           cd kernel-source
-          git clone https://github.com/KernelSU-Next/KernelSU-Next -b legacy KernelSU
 
+          # 1. Run the official setup script pointing to the legacy branch
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/vendor/blu_spark_defconfig
-          echo "CONFIG_HAVE_KPROBES=n" >> arch/arm64/configs/vendor/blu_spark_defconfig
+          # 2. Remove existing Kprobe and KernelSU configuration entries
+          sed -i '/CONFIG_KPROBES/d' arch/arm64/configs/vendor/blu_spark_defconfig
+          sed -i '/CONFIG_KPROBE_EVENTS/d' arch/arm64/configs/vendor/blu_spark_defconfig
+          sed -i '/CONFIG_KSU/d' arch/arm64/configs/vendor/blu_spark_defconfig
+
+          # 3. Append required hooks and module subsystems
+          echo "CONFIG_MODULES=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
+          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
+          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
+          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
           echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
 
       - name: Download Proton Clang Toolchain
         run: |
@@ -44,22 +52,37 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel-source
-          export PATH=$GITHUB_WORKSPACE/tc/bin:$PATH
+
+          # Setup toolchain paths
           export ARCH=arm64
           export SUBARCH=arm64
+          export PATH=$GITHUB_WORKSPACE/tc/bin:$PATH
+
+          # Use the Ubuntu runner's native GCC system tools
+          export HOSTCC=gcc
+          export HOSTCXX=g++
+          export HOSTLD=ld
+
+          # Assign targets for the cross-compiler
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           export CC=clang
+          export LD=ld.lld
 
+          # Generate base configuration files
           make O=out vendor/blu_spark_defconfig
+
+          # Compile the kernel
           make -j$(nproc --all) O=out
 
       - name: Package Into AnyKernel3 Zip
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AK3
 
+          # Copy compiled kernel image
           cp kernel-source/out/arch/arm64/boot/Image.gz-dtb AK3/
 
+          # Disable strict device validation
           cd AK3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           zip -r9 ../blu_spark_r277_KSU_Next.zip *
