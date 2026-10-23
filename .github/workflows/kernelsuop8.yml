@@ -7,6 +7,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Maximize Disk Space
         uses: easimon/maximize-build-space@v10
@@ -32,17 +33,27 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex \
+            g++-multilib gcc-multilib \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
+            git gnupg gperf lib32readline-dev lib32z1-dev \
+            liblz4-tool libncurses5-dev libssl-dev \
+            libxml2 libxml2-utils lzop pngcrush rsync \
+            schedtool squashfs-tools xsltproc zip \
+            zlib1g-dev python3
 
-      - name: Clone blu_spark r277 Kernel Source (Android 17)
+      - name: Clone blu_spark r277 Kernel Source
         run: |
           git clone https://github.com/engstk/op8 --depth=1 -b blu_spark-17-custom kernel-source
 
       - name: Integrate KernelSU-Next (Official Legacy Kprobe Script)
         run: |
+          set -e
           cd kernel-source
 
-          # Run the official setup script using the legacy branch
+          # Integrate KernelSU-Next using the legacy setup
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
           # Remove existing Kprobe and KernelSU configuration entries
@@ -50,12 +61,14 @@ jobs:
           sed -i '/CONFIG_KPROBE_EVENTS/d' arch/arm64/configs/blu_spark_defconfig
           sed -i '/CONFIG_KSU/d' arch/arm64/configs/blu_spark_defconfig
 
-          # Append required hooks and module subsystems
-          echo "CONFIG_MODULES=y" >> arch/arm64/configs/blu_spark_defconfig
-          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/blu_spark_defconfig
-          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/blu_spark_defconfig
-          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/blu_spark_defconfig
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/blu_spark_defconfig
+          # Append required configuration options
+          cat >> arch/arm64/configs/blu_spark_defconfig <<'EOF'
+          CONFIG_MODULES=y
+          CONFIG_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_KSU_KPROBE_HOOKS=y
+          CONFIG_KSU=y
+          EOF
 
       - name: Download Proton Clang Toolchain
         run: |
@@ -63,43 +76,56 @@ jobs:
 
       - name: Build Kernel
         run: |
+          set -e
           cd kernel-source
 
-          # Set architecture
+          # Architecture
           export ARCH=arm64
           export SUBARCH=arm64
 
-          # Keep native Ubuntu tools ahead of Proton Clang
+          # Prefer Ubuntu native host tools
           export PATH="/usr/bin:/bin:$GITHUB_WORKSPACE/tc/bin"
 
-          # Configure native host compilation tools
+          # Native host compilation
           export HOSTCC=/usr/bin/gcc
           export HOSTCXX=/usr/bin/g++
           export HOSTLD=/usr/bin/ld
-          export HOSTLDFLAGS=""
 
-          # Configure Android cross-compilation
+          # Cross-compilers
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          # Clang toolchain
           export CC=clang
           export LD=ld.lld
 
-          # Verify toolchain selection
-          echo "Host linker: $(command -v ld)"
-          echo "Host compiler: $(command -v gcc)"
-          echo "Clang compiler: $(command -v clang)"
+          # Verify tools
+          echo "Host linker:"
           /usr/bin/ld --version
+
+          echo "Host compiler:"
           /usr/bin/gcc --version
+
+          echo "ARM64 cross-compiler:"
+          aarch64-linux-gnu-gcc --version
+
+          echo "ARM32 cross-compiler:"
+          arm-linux-gnueabi-gcc --version
+
+          echo "Clang:"
           clang --version
+
+          echo "LLD:"
           ld.lld --version
 
-          # Generate kernel configuration
-          make O=out vendor/blu_spark_defconfig \
+          # Generate configuration from the correct defconfig
+          make O=out \
             HOSTCC=/usr/bin/gcc \
             HOSTCXX=/usr/bin/g++ \
-            HOSTLD=/usr/bin/ld
+            HOSTLD=/usr/bin/ld \
+            blu_spark_defconfig
 
-          # Build kernel
+          # Compile the kernel
           make -j"$(nproc --all)" O=out \
             CC=clang \
             HOSTCC=/usr/bin/gcc \
@@ -108,18 +134,23 @@ jobs:
 
       - name: Package Into AnyKernel3 Zip
         run: |
+          set -e
+
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AK3
 
-          # Copy compiled kernel image
+          # Copy the compiled kernel image
           cp kernel-source/out/arch/arm64/boot/Image.gz-dtb AK3/
 
           # Disable strict device validation
           cd AK3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../blu_spark_r277_KSU_Next.zip *
+
+          # Create flashable ZIP
+          zip -r9 ../blu_spark_r277_KSU_Next.zip .
 
       - name: Upload Flashable Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: blu_spark-r277-KernelSU-Next
           path: blu_spark_r277_KSU_Next.zip
+          if-no-files-found: error
