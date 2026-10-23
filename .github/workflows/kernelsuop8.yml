@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Maximize Disk Space
@@ -38,9 +38,12 @@ jobs:
         run: |
           set -e
           sudo apt-get update
+
           sudo apt-get install -y \
             bc bison build-essential ccache curl flex \
             g++-multilib gcc-multilib \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
             git gnupg gperf \
             lib32readline-dev lib32z1-dev \
             liblz4-tool libncurses-dev libssl-dev \
@@ -48,27 +51,40 @@ jobs:
             schedtool squashfs-tools xsltproc zip \
             zlib1g-dev python3
 
-      - name: Install ARM Cross-Compilers
+      - name: Verify Host and Cross-Compilers
         run: |
           set -e
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi
 
+          echo "Ubuntu version:"
+          cat /etc/os-release
+
+          echo "Host GCC:"
+          /usr/bin/gcc --version
+
+          echo "Host linker:"
+          /usr/bin/ld --version
+
+          echo "ARM64 GCC:"
           aarch64-linux-gnu-gcc --version
+
+          echo "ARM32 GCC:"
           arm-linux-gnueabi-gcc --version
 
-      - name: Clone blu_spark r277 Kernel Source
+      - name: Clone blu_spark Kernel Source
         run: |
           set -e
+
           git clone \
-            https://github.com/engstk/op8 \
             --depth=1 \
             -b blu_spark-17-custom \
+            https://github.com/engstk/op8 \
             kernel-source
 
+          test -f kernel-source/Makefile
           test -f kernel-source/arch/arm64/configs/blu_spark_defconfig
+
+          cd kernel-source
+          head -n 5 Makefile
 
       - name: Integrate KernelSU-Next
         run: |
@@ -81,8 +97,12 @@ jobs:
 
           bash /tmp/kernelsu-setup.sh legacy
 
+          echo "Checking KernelSU integration..."
+          test -d KernelSU-Next
+
           DEFCONFIG=arch/arm64/configs/blu_spark_defconfig
 
+          # Remove conflicting entries before adding required options.
           sed -i \
             -e '/^CONFIG_KPROBES=/d' \
             -e '/^CONFIG_KPROBE_EVENTS=/d' \
@@ -102,38 +122,49 @@ jobs:
           CONFIG_KSU=y
           EOF
 
-      - name: Download Proton Clang Toolchain
+      - name: Fix Known Clang Warning-Flag Incompatibility
         run: |
           set -e
+          cd kernel-source
+
+          # This legacy kernel Makefile passes a GCC-specific warning
+          # suppression option to Clang. Remove only that unsupported flag.
+          if ! grep -q -- '-Wno-unused-but-set-variable' Makefile; then
+            echo "Expected warning flag was not found in the top-level Makefile."
+            echo "Review the source Makefile before continuing."
+            exit 1
+          fi
+
+          sed -i \
+            's/-Wno-unused-but-set-variable//g' \
+            Makefile
+
+          if grep -q -- '-Wno-unused-but-set-variable' Makefile; then
+            echo "ERROR: Unsupported flag is still present."
+            exit 1
+          fi
+
+          echo "Updated kernel compiler flags:"
+          grep -n 'Wno-unused-but-set-variable\|Werror=unknown-warning-option' \
+            Makefile || true
+
+      - name: Download Proton Clang
+        run: |
+          set -e
+
           git clone \
-            https://github.com/kdrag0n/proton-clang \
             --depth=1 \
+            https://github.com/kdrag0n/proton-clang \
             tc
 
           test -x "$GITHUB_WORKSPACE/tc/bin/clang"
           test -x "$GITHUB_WORKSPACE/tc/bin/ld.lld"
 
-      - name: Verify Toolchain
-        run: |
-          set -e
-
-          echo "Host GCC:"
-          /usr/bin/gcc --version
-
-          echo "Host linker:"
-          /usr/bin/ld --version
-
-          echo "Proton Clang:"
+          echo "Proton Clang version:"
           "$GITHUB_WORKSPACE/tc/bin/clang" --version
 
-          echo "Proton LLD:"
+          echo "Proton LLD version:"
           "$GITHUB_WORKSPACE/tc/bin/ld.lld" --version
-
-          echo "ARM64 cross-compiler:"
-          aarch64-linux-gnu-gcc --version
-
-          echo "ARM32 cross-compiler:"
-          arm-linux-gnueabi-gcc --version
 
       - name: Configure Kernel
         run: |
@@ -144,17 +175,27 @@ jobs:
           export SUBARCH=arm64
           export PATH="/usr/bin:/bin:$GITHUB_WORKSPACE/tc/bin"
 
+          CLANG="$GITHUB_WORKSPACE/tc/bin/clang"
+          LLD="$GITHUB_WORKSPACE/tc/bin/ld.lld"
+
           make O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
-            CC="$GITHUB_WORKSPACE/tc/bin/clang" \
-            LD="$GITHUB_WORKSPACE/tc/bin/ld.lld" \
+            CC="$CLANG" \
+            LD="$LLD" \
             HOSTCC=/usr/bin/gcc \
             HOSTCXX=/usr/bin/g++ \
             HOSTLD=/usr/bin/ld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             blu_spark_defconfig
+
+          echo "Checking generated configuration..."
+          test -f out/.config
+
+          grep -E \
+            'CONFIG_(MODULES|KPROBES|KPROBE_EVENTS|KSU)=' \
+            out/.config || true
 
       - name: Build Kernel
         run: |
@@ -168,15 +209,12 @@ jobs:
           CLANG="$GITHUB_WORKSPACE/tc/bin/clang"
           LLD="$GITHUB_WORKSPACE/tc/bin/ld.lld"
 
-          # Prevent unknown Clang warning flags from being fatal.
-          export KCFLAGS="-Wno-unknown-warning-option"
-          export HOSTCFLAGS="-Wno-unknown-warning-option"
-
-          # Show compiler versions and effective compatibility flags.
+          echo "Building with:"
           "$CLANG" --version
-          echo "KCFLAGS=$KCFLAGS"
-          echo "HOSTCFLAGS=$HOSTCFLAGS"
+          aarch64-linux-gnu-gcc --version
 
+          # Do not globally disable warnings or -Werror.
+          # Fix compiler incompatibilities specifically in the source.
           make -j"$(nproc --all)" O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -185,14 +223,16 @@ jobs:
             HOSTCC=/usr/bin/gcc \
             HOSTCXX=/usr/bin/g++ \
             HOSTLD=/usr/bin/ld \
-            HOSTCFLAGS="$HOSTCFLAGS" \
-            KCFLAGS="$KCFLAGS" \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          echo "Checking kernel output..."
+          echo "Kernel build completed. Checking output..."
+
           find out/arch/arm64/boot \
-            -maxdepth 1 -type f -name 'Image*' -print
+            -maxdepth 1 \
+            -type f \
+            -name 'Image*' \
+            -print
 
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
             echo "KERNEL_IMAGE=Image.gz-dtb" >> "$GITHUB_ENV"
@@ -205,26 +245,34 @@ jobs:
             exit 1
           fi
 
-      - name: Package Into AnyKernel3 Zip
+      - name: Package Into AnyKernel3
         run: |
           set -e
 
           git clone \
-            https://github.com/osm0sis/AnyKernel3 \
             --depth=1 \
+            https://github.com/osm0sis/AnyKernel3 \
             AK3
 
-          cp \
-            "kernel-source/out/arch/arm64/boot/$KERNEL_IMAGE" \
-            AK3/
+          test -n "$KERNEL_IMAGE"
+
+          SOURCE_IMAGE="kernel-source/out/arch/arm64/boot/$KERNEL_IMAGE"
+          test -f "$SOURCE_IMAGE"
+
+          cp "$SOURCE_IMAGE" AK3/
 
           cd AK3
 
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i \
+            's/do.devicecheck=1/do.devicecheck=0/g' \
+            anykernel.sh
 
           zip -r9 ../blu_spark_r277_KSU_Next.zip . \
             -x '.git/*' \
             -x '.github/*'
+
+          cd ..
+          test -s blu_spark_r277_KSU_Next.zip
 
       - name: Upload Flashable Build Artifact
         uses: actions/upload-artifact@v4
