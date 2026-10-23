@@ -42,15 +42,15 @@ jobs:
         run: |
           cd kernel-source
 
-          # 1. Run the official setup script pointing to the legacy branch
+          # Run the official setup script using the legacy branch
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-          # 2. Remove existing Kprobe and KernelSU configuration entries
+          # Remove existing Kprobe and KernelSU configuration entries
           sed -i '/CONFIG_KPROBES/d' arch/arm64/configs/blu_spark_defconfig
           sed -i '/CONFIG_KPROBE_EVENTS/d' arch/arm64/configs/blu_spark_defconfig
           sed -i '/CONFIG_KSU/d' arch/arm64/configs/blu_spark_defconfig
 
-          # 3. Append required hooks and module subsystems
+          # Append required hooks and module subsystems
           echo "CONFIG_MODULES=y" >> arch/arm64/configs/blu_spark_defconfig
           echo "CONFIG_KPROBES=y" >> arch/arm64/configs/blu_spark_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/blu_spark_defconfig
@@ -61,7 +61,6 @@ jobs:
         run: |
           git clone https://github.com/kdrag0n/proton-clang --depth=1 tc
 
-      
       - name: Build Kernel
         run: |
           cd kernel-source
@@ -70,34 +69,42 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
 
-          # Toolchain paths
-          export PATH="$GITHUB_WORKSPACE/tc/bin:/usr/bin:/bin"
+          # Keep native Ubuntu tools ahead of Proton Clang
+          export PATH="/usr/bin:/bin:$GITHUB_WORKSPACE/tc/bin"
 
-          # Use native Ubuntu tools for host executables
+          # Configure native host compilation tools
           export HOSTCC=/usr/bin/gcc
           export HOSTCXX=/usr/bin/g++
           export HOSTLD=/usr/bin/ld
           export HOSTLDFLAGS=""
 
-          # Android kernel cross-compilation tools
+          # Configure Android cross-compilation
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           export CC=clang
           export LD=ld.lld
 
-          # Verify the host linker
+          # Verify toolchain selection
+          echo "Host linker: $(command -v ld)"
+          echo "Host compiler: $(command -v gcc)"
+          echo "Clang compiler: $(command -v clang)"
           /usr/bin/ld --version
           /usr/bin/gcc --version
+          clang --version
+          ld.lld --version
 
-          # Configure kernel
-          make O=out vendor/blu_spark_defconfig
-
-          # Build kernel using all available cores
-          make -j"$(nproc --all)" O=out \
+          # Generate kernel configuration
+          make O=out vendor/blu_spark_defconfig \
             HOSTCC=/usr/bin/gcc \
             HOSTCXX=/usr/bin/g++ \
             HOSTLD=/usr/bin/ld
 
+          # Build kernel
+          make -j"$(nproc --all)" O=out \
+            CC=clang \
+            HOSTCC=/usr/bin/gcc \
+            HOSTCXX=/usr/bin/g++ \
+            HOSTLD=/usr/bin/ld
 
       - name: Package Into AnyKernel3 Zip
         run: |
