@@ -34,16 +34,16 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
           # 2. Remove existing Kprobe and KernelSU configuration entries
-          sed -i '/CONFIG_KPROBES/d' arch/arm64/configs/vendor/blu_spark_defconfig
-          sed -i '/CONFIG_KPROBE_EVENTS/d' arch/arm64/configs/vendor/blu_spark_defconfig
-          sed -i '/CONFIG_KSU/d' arch/arm64/configs/vendor/blu_spark_defconfig
+          sed -i '/CONFIG_KPROBES/d' arch/arm64/configs/blu_spark_defconfig
+          sed -i '/CONFIG_KPROBE_EVENTS/d' arch/arm64/configs/blu_spark_defconfig
+          sed -i '/CONFIG_KSU/d' arch/arm64/configs/blu_spark_defconfig
 
           # 3. Append required hooks and module subsystems
-          echo "CONFIG_MODULES=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
-          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
-          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
-          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/blu_spark_defconfig
+          echo "CONFIG_MODULES=y" >> arch/arm64/configs/blu_spark_defconfig
+          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/blu_spark_defconfig
+          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/blu_spark_defconfig
+          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/blu_spark_defconfig
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/blu_spark_defconfig
 
       - name: Download Proton Clang Toolchain
         run: |
