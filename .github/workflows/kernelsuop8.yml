@@ -51,21 +51,12 @@ jobs:
       - name: Install ARM Cross-Compilers
         run: |
           set -e
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi
 
-          if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-          fi
-
-          if ! command -v arm-linux-gnueabi-gcc >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y gcc-arm-linux-gnueabi
-          fi
-
-          echo "ARM64 compiler:"
           aarch64-linux-gnu-gcc --version
-
-          echo "ARM32 compiler:"
           arm-linux-gnueabi-gcc --version
 
       - name: Clone blu_spark r277 Kernel Source
@@ -90,22 +81,17 @@ jobs:
 
           bash /tmp/kernelsu-setup.sh legacy
 
-          # Verify the integration added KernelSU files.
-          if [ ! -d KernelSU-Next ] && [ ! -d KernelSU ]; then
-            echo "Warning: KernelSU directory was not found at the expected source paths."
-            echo "Inspect the setup script output and repository layout."
-          fi
-
-          # Edit the actual defconfig file.
           DEFCONFIG=arch/arm64/configs/blu_spark_defconfig
 
-          sed -i '/^CONFIG_KPROBES=/d' "$DEFCONFIG"
-          sed -i '/^CONFIG_KPROBE_EVENTS=/d' "$DEFCONFIG"
-          sed -i '/^CONFIG_KSU=/d' "$DEFCONFIG"
-          sed -i '/^CONFIG_KSU_KPROBE_HOOKS=/d' "$DEFCONFIG"
-          sed -i '/^# CONFIG_KPROBES is not set/d' "$DEFCONFIG"
-          sed -i '/^# CONFIG_KPROBE_EVENTS is not set/d' "$DEFCONFIG"
-          sed -i '/^# CONFIG_KSU is not set/d' "$DEFCONFIG"
+          sed -i \
+            -e '/^CONFIG_KPROBES=/d' \
+            -e '/^CONFIG_KPROBE_EVENTS=/d' \
+            -e '/^CONFIG_KSU=/d' \
+            -e '/^CONFIG_KSU_KPROBE_HOOKS=/d' \
+            -e '/^# CONFIG_KPROBES is not set/d' \
+            -e '/^# CONFIG_KPROBE_EVENTS is not set/d' \
+            -e '/^# CONFIG_KSU is not set/d' \
+            "$DEFCONFIG"
 
           cat >> "$DEFCONFIG" <<'EOF'
 
@@ -124,8 +110,8 @@ jobs:
             --depth=1 \
             tc
 
-          test -x tc/bin/clang
-          test -x tc/bin/ld.lld
+          test -x "$GITHUB_WORKSPACE/tc/bin/clang"
+          test -x "$GITHUB_WORKSPACE/tc/bin/ld.lld"
 
       - name: Verify Toolchain
         run: |
@@ -156,8 +142,6 @@ jobs:
 
           export ARCH=arm64
           export SUBARCH=arm64
-
-          # Use explicit tool paths to avoid mixing host and target linkers.
           export PATH="/usr/bin:/bin:$GITHUB_WORKSPACE/tc/bin"
 
           make O=out \
@@ -181,19 +165,34 @@ jobs:
           export SUBARCH=arm64
           export PATH="/usr/bin:/bin:$GITHUB_WORKSPACE/tc/bin"
 
+          CLANG="$GITHUB_WORKSPACE/tc/bin/clang"
+          LLD="$GITHUB_WORKSPACE/tc/bin/ld.lld"
+
+          # Prevent unknown Clang warning flags from being fatal.
+          export KCFLAGS="-Wno-unknown-warning-option"
+          export HOSTCFLAGS="-Wno-unknown-warning-option"
+
+          # Show compiler versions and effective compatibility flags.
+          "$CLANG" --version
+          echo "KCFLAGS=$KCFLAGS"
+          echo "HOSTCFLAGS=$HOSTCFLAGS"
+
           make -j"$(nproc --all)" O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
-            CC="$GITHUB_WORKSPACE/tc/bin/clang" \
-            LD="$GITHUB_WORKSPACE/tc/bin/ld.lld" \
+            CC="$CLANG" \
+            LD="$LLD" \
             HOSTCC=/usr/bin/gcc \
             HOSTCXX=/usr/bin/g++ \
             HOSTLD=/usr/bin/ld \
+            HOSTCFLAGS="$HOSTCFLAGS" \
+            KCFLAGS="$KCFLAGS" \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
           echo "Checking kernel output..."
-          find out/arch/arm64/boot -maxdepth 1 -type f -name 'Image*' -print
+          find out/arch/arm64/boot \
+            -maxdepth 1 -type f -name 'Image*' -print
 
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
             echo "KERNEL_IMAGE=Image.gz-dtb" >> "$GITHUB_ENV"
