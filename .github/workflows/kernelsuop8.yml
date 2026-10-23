@@ -38,20 +38,17 @@ jobs:
         run: |
           set -e
           sudo apt-get update
-
           sudo apt-get install -y \
             bc bison build-essential ccache curl flex \
-            g++-multilib gcc-multilib \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi \
+            gcc g++ \
             git gnupg gperf \
-            lib32readline-dev lib32z1-dev \
             liblz4-tool libncurses-dev libssl-dev \
             libxml2 libxml2-utils lzop pngcrush rsync \
             schedtool squashfs-tools xsltproc zip \
-            zlib1g-dev python3
+            zlib1g-dev python3 \
+            gcc-aarch64-linux-gnu
 
-      - name: Verify Host and Cross-Compilers
+      - name: Verify Host and ARM64 Cross-Compiler
         run: |
           set -e
 
@@ -61,14 +58,17 @@ jobs:
           echo "Host GCC:"
           /usr/bin/gcc --version
 
+          echo "Host G++:"
+          /usr/bin/g++ --version
+
           echo "Host linker:"
           /usr/bin/ld --version
 
-          echo "ARM64 GCC:"
+          echo "ARM64 cross-compiler:"
           aarch64-linux-gnu-gcc --version
 
-          echo "ARM32 GCC:"
-          arm-linux-gnueabi-gcc --version
+          echo "Available disk space:"
+          df -h
 
       - name: Clone blu_spark Kernel Source
         run: |
@@ -84,7 +84,12 @@ jobs:
           test -f kernel-source/arch/arm64/configs/blu_spark_defconfig
 
           cd kernel-source
-          head -n 5 Makefile
+
+          echo "Kernel source Makefile:"
+          head -n 10 Makefile
+
+          echo "Kernel configuration:"
+          ls -l arch/arm64/configs/blu_spark_defconfig
 
       - name: Integrate KernelSU-Next
         run: |
@@ -97,12 +102,11 @@ jobs:
 
           bash /tmp/kernelsu-setup.sh legacy
 
-          echo "Checking KernelSU integration..."
+          echo "Checking KernelSU-Next integration..."
           test -d KernelSU-Next
 
           DEFCONFIG=arch/arm64/configs/blu_spark_defconfig
 
-          # Remove conflicting entries before adding required options.
           sed -i \
             -e '/^CONFIG_KPROBES=/d' \
             -e '/^CONFIG_KPROBE_EVENTS=/d' \
@@ -122,31 +126,33 @@ jobs:
           CONFIG_KSU=y
           EOF
 
-      - name: Fix Known Clang Warning-Flag Incompatibility
+          echo "KernelSU-Next integration completed."
+
+      - name: Fix Unsupported Clang Warning Flag
         run: |
           set -e
           cd kernel-source
 
-          # This legacy kernel Makefile passes a GCC-specific warning
-          # suppression option to Clang. Remove only that unsupported flag.
-          if ! grep -q -- '-Wno-unused-but-set-variable' Makefile; then
-            echo "Expected warning flag was not found in the top-level Makefile."
-            echo "Review the source Makefile before continuing."
-            exit 1
-          fi
-
-          sed -i \
-            's/-Wno-unused-but-set-variable//g' \
-            Makefile
+          echo "Searching for the unsupported warning flag..."
+          grep -n -- '-Wno-unused-but-set-variable' Makefile || true
 
           if grep -q -- '-Wno-unused-but-set-variable' Makefile; then
-            echo "ERROR: Unsupported flag is still present."
+            sed -i \
+              's/-Wno-unused-but-set-variable//g' \
+              Makefile
+          fi
+
+          if grep -q -- '-Wno-unused-but-set-variable' Makefile; then
+            echo "ERROR: Unsupported flag remains in the top-level Makefile."
             exit 1
           fi
 
-          echo "Updated kernel compiler flags:"
-          grep -n 'Wno-unused-but-set-variable\|Werror=unknown-warning-option' \
-            Makefile || true
+          echo "Checking whether the flag occurs elsewhere..."
+          grep -R -n \
+            --include='Makefile' \
+            --include='*.mk' \
+            -- '-Wno-unused-but-set-variable' \
+            . || true
 
       - name: Download Proton Clang
         run: |
@@ -197,6 +203,11 @@ jobs:
             'CONFIG_(MODULES|KPROBES|KPROBE_EVENTS|KSU)=' \
             out/.config || true
 
+          echo "Checking ARM32 compatibility configuration..."
+          grep -E \
+            'CONFIG_(COMPAT|COMPAT_VDSO)=' \
+            out/.config || true
+
       - name: Build Kernel
         run: |
           set -e
@@ -209,12 +220,14 @@ jobs:
           CLANG="$GITHUB_WORKSPACE/tc/bin/clang"
           LLD="$GITHUB_WORKSPACE/tc/bin/ld.lld"
 
-          echo "Building with:"
+          echo "Compiler:"
           "$CLANG" --version
+
+          echo "ARM64 cross-compiler:"
           aarch64-linux-gnu-gcc --version
 
-          # Do not globally disable warnings or -Werror.
-          # Fix compiler incompatibilities specifically in the source.
+          echo "Starting kernel build..."
+
           make -j"$(nproc --all)" O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -226,7 +239,8 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          echo "Kernel build completed. Checking output..."
+          echo "Kernel build completed."
+          echo "Searching for kernel images..."
 
           find out/arch/arm64/boot \
             -maxdepth 1 \
@@ -245,6 +259,8 @@ jobs:
             exit 1
           fi
 
+          echo "Selected image: $KERNEL_IMAGE"
+
       - name: Package Into AnyKernel3
         run: |
           set -e
@@ -257,7 +273,11 @@ jobs:
           test -n "$KERNEL_IMAGE"
 
           SOURCE_IMAGE="kernel-source/out/arch/arm64/boot/$KERNEL_IMAGE"
-          test -f "$SOURCE_IMAGE"
+
+          if [ ! -f "$SOURCE_IMAGE" ]; then
+            echo "ERROR: Kernel image not found: $SOURCE_IMAGE"
+            exit 1
+          fi
 
           cp "$SOURCE_IMAGE" AK3/
 
@@ -272,7 +292,11 @@ jobs:
             -x '.github/*'
 
           cd ..
+
           test -s blu_spark_r277_KSU_Next.zip
+
+          echo "Flashable ZIP created:"
+          ls -lh blu_spark_r277_KSU_Next.zip
 
       - name: Upload Flashable Build Artifact
         uses: actions/upload-artifact@v4
